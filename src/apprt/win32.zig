@@ -151,8 +151,6 @@ fn textFromVirtualKey(
     mods: input.Mods,
     buf: []u8,
 ) []const u8 {
-    _ = mods;
-
     // Keyboard state for ToUnicode.
     var key_state: [256]u8 = @splat(0);
     _ = win32.exp.GetKeyboardState(&key_state);
@@ -169,6 +167,43 @@ fn textFromVirtualKey(
     if (n <= 0) return "";
 
     const slice = wide[0..@intCast(n)];
+
+    // With Ctrl held, Windows translates printable keys into C0 control
+    // characters (e.g. Ctrl+W -> 0x17). The core key encoder expects the
+    // unmodified character so it can apply its own control character
+    // mapping (ctrlSeq); feeding it a raw control byte breaks that and
+    // produces CSI-u sequences like `ESC [23;5u` instead of the legacy
+    // 0x17 byte for Ctrl+W. Mirror the macOS apprt behavior: when the
+    // translated text is a single control character and Ctrl is held,
+    // re-run ToUnicode with the Ctrl key state cleared so we get the
+    // underlying character (e.g. 'w').
+    if (mods.ctrl and slice.len == 1) {
+        const cp = slice[0];
+        if (cp < 0x20 or cp == 0x7F) {
+            var unctrl_state = key_state;
+            unctrl_state[0x11] = 0; // VK_CONTROL
+            unctrl_state[0xA2] = 0; // VK_LCONTROL
+            unctrl_state[0xA3] = 0; // VK_RCONTROL
+            var wide_unctrl: [8]u16 = @splat(0);
+            const n_unctrl = win32.exp.ToUnicode(
+                vk,
+                scancode,
+                &unctrl_state,
+                &wide_unctrl,
+                wide_unctrl.len,
+                0,
+            );
+            // Only use the re-translated character if it is a single
+            // printable codepoint. Otherwise (dead keys, keys that are
+            // control characters even without Ctrl, etc.) keep the
+            // original text.
+            if (n_unctrl == 1 and wide_unctrl[0] >= 0x20 and wide_unctrl[0] != 0x7F) {
+                const len = std.unicode.utf16LeToUtf8(buf, wide_unctrl[0..1]) catch return "";
+                return buf[0..len];
+            }
+        }
+    }
+
     const len = std.unicode.utf16LeToUtf8(buf, slice) catch return "";
     return buf[0..len];
 }
