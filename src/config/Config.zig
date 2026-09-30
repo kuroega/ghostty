@@ -6645,6 +6645,18 @@ pub const Keybinds = struct {
                 );
             }
 
+            // On Windows, ctrl+v is the standard paste shortcut. Bind it as
+            // performable so a failed paste (e.g. an empty clipboard) falls
+            // through to the key encoder instead of being swallowed.
+            if (builtin.target.os.tag == .windows) {
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .unicode = 'v' }, .mods = inputpkg.ctrlOrSuper(.{}) },
+                    .paste_from_clipboard,
+                    .{ .performable = true },
+                );
+            }
+
             // On macOS we default to super but Linux ctrl+shift since
             // ctrl+c is to kill the process.
             const mods: inputpkg.Mods = if (builtin.target.os.tag.isDarwin())
