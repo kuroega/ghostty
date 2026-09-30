@@ -32,3 +32,6 @@ glad.zip
 vgcore.*
 
 /sprite_face_test*
+
+# Verified, build-local Microsoft native ConPTY binaries.
+/vendor/conpty/runtime/

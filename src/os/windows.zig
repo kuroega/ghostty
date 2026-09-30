@@ -66,6 +66,7 @@ pub const STARTUPINFOEX = extern struct {
 
 // Well-known constant values
 pub const INFINITE = 4294967295;
+pub const WAIT_TIMEOUT: DWORD = 258;
 pub const INVALID_HANDLE_VALUE = windows.INVALID_HANDLE_VALUE;
 pub const MAX_PATH = windows.MAX_PATH;
 pub const FALSE: windows.BOOL = .fromBool(false);
@@ -256,6 +257,9 @@ pub const exp = struct {
             hProcess: HANDLE,
             uExitCode: UINT,
         ) callconv(.winapi) BOOL;
+        pub extern "kernel32" fn CancelSynchronousIo(
+            hThread: HANDLE,
+        ) callconv(.winapi) BOOL;
         pub extern "kernel32" fn CancelIoEx(
             hFile: HANDLE,
             lpOverlapped: ?*OVERLAPPED,
@@ -265,6 +269,13 @@ pub const exp = struct {
             lpBuffer: LPVOID,
             nNumberOfBytesToRead: DWORD,
             lpNumberOfBytesRead: ?*DWORD,
+            lpOverlapped: ?*OVERLAPPED,
+        ) callconv(.winapi) BOOL;
+        pub extern "kernel32" fn WriteFile(
+            hFile: HANDLE,
+            lpBuffer: [*]const u8,
+            nNumberOfBytesToWrite: DWORD,
+            lpNumberOfBytesWritten: ?*DWORD,
             lpOverlapped: ?*OVERLAPPED,
         ) callconv(.winapi) BOOL;
         /// https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew

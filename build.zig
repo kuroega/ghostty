@@ -210,9 +210,18 @@ pub fn build(b: *std.Build) !void {
     // Helpgen
     if (config.emit_helpgen) deps.help_strings.install();
 
+    // Share one backend installation across installed apps and cache-located
+    // run/test artifacts. Declaring this step does not execute it for VT-only
+    // builds or unrelated build steps.
+    const conpty = if (config.target.result.os.tag == .windows)
+        @import("src/build/Conpty.zig").install(b, config.target.result)
+    else
+        null;
+
     // Runtime "none" is libghostty, anything else is an executable.
     if (config.app_runtime != .none) {
         if (config.emit_exe) {
+            if (conpty) |backend| exe.install_step.step.dependOn(backend);
             exe.install();
             resources.install();
             if (i18n) |v| v.install();
@@ -281,6 +290,10 @@ pub fn build(b: *std.Build) !void {
     run: {
         if (config.app_runtime != .none) {
             const run_cmd = b.addRunArtifact(exe.exe);
+            if (conpty) |backend| {
+                run_cmd.step.dependOn(backend);
+                run_cmd.setEnvironmentVariable("GHOSTTY_CONPTY_DIR", b.getInstallPath(.bin, "conpty"));
+            }
             if (b.args) |args| run_cmd.addArgs(args);
 
             // Set the proper resources dir so things like shell integration
@@ -403,6 +416,10 @@ pub fn build(b: *std.Build) !void {
 
         // Normal test running
         const test_run = b.addRunArtifact(test_exe);
+        if (conpty) |backend| {
+            test_run.step.dependOn(backend);
+            test_run.setEnvironmentVariable("GHOSTTY_CONPTY_DIR", b.getInstallPath(.bin, "conpty"));
+        }
         config.addPatchElf(test_exe, &test_run.step);
         test_step.dependOn(&test_run.step);
 

@@ -70,7 +70,13 @@ comptime {
     const enabled =
         std.simd.suggestVectorLength(u8) != null and
         builtin.object_format != .c and
-        !(linkage == .weak and builtin.object_format == .coff);
+        !(linkage == .weak and builtin.object_format == .coff) and
+        // Windows always links the MSVC CRT (msvcrt/libvcruntime), which
+        // provides memset. A strong export from our own objects collides
+        // with libvcruntime.lib(memset.obj) (lld-link duplicate symbol),
+        // and we don't need the override there since compiler_rt's slow
+        // memset is bypassed by the CRT.
+        builtin.os.tag != .windows;
 
     if (enabled) @export(&memset, .{
         .name = "memset",

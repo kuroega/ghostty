@@ -39,7 +39,7 @@ pub const StreamHandler = struct {
 
     /// A handle to wake up the renderer. This hints to the renderer that
     /// a repaint should happen.
-    renderer_wakeup: xev.Async,
+    renderer_wakeup: *xev.Async,
 
     /// The response to use for ENQ requests. The memory is owned by
     /// whoever owns StreamHandler.
@@ -1894,6 +1894,40 @@ pub const StreamHandler = struct {
         self.surfaceMessageWriter(.{ .progress_report = report });
     }
 };
+
+test "queueRender uses the renderer's registered wakeup watcher" {
+    var loop = try xev.Loop.init(.{});
+    defer loop.deinit();
+    var wakeup = try xev.Async.init();
+    defer wakeup.deinit();
+
+    // Termio is initialized before the renderer registers its watcher.
+    // A value copy here loses that registration on IOCP, unlike eventfd.
+    var handler: StreamHandler = undefined;
+    handler.renderer_wakeup = &wakeup;
+
+    var count: u32 = 0;
+    var completion: xev.Completion = .{};
+    wakeup.wait(&loop, &completion, u32, &count, (struct {
+        fn callback(
+            userdata: ?*u32,
+            _: *xev.Loop,
+            _: *xev.Completion,
+            result: xev.Async.WaitError!void,
+        ) xev.CallbackAction {
+            result catch unreachable;
+            userdata.?.* += 1;
+            return .rearm;
+        }
+    }).callback);
+
+    // Poll without blocking so a lost notification fails instead of hanging.
+    for (1..3) |expected| {
+        try handler.queueRender();
+        for (0..10) |_| try loop.run(.no_wait);
+        try std.testing.expectEqual(@as(u32, @intCast(expected)), count);
+    }
+}
 
 test "kitty clipboard read: targets-only never consumes a one-time grant" {
     const testing = std.testing;

@@ -222,6 +222,18 @@ pub fn exportDmabuf(
 /// `GL_FRAMEBUFFER_SRGB` has no effect on `ReadPixels`, so the stored
 /// values are returned verbatim.
 pub fn readPixelsAlloc(self: *const Self, alloc: std.mem.Allocator) ![]u8 {
+    return self.readPixelsAllocFormat(alloc, .rgba);
+}
+
+/// Same as `readPixelsAlloc` but lets the caller pick the pixel format
+/// that is read back. Windows uses `bgra` so that the resulting buffer
+/// can be handed to GDI (which expects BGRA for 32bpp BI_RGB DIBs)
+/// without any CPU swizzle.
+pub fn readPixelsAllocFormat(
+    self: *const Self,
+    alloc: std.mem.Allocator,
+    format: gl.Texture.Format,
+) ![]u8 {
     const bind = try self.framebuffer.bind(.read);
     defer bind.unbind();
 
@@ -233,7 +245,7 @@ pub fn readPixelsAlloc(self: *const Self, alloc: std.mem.Allocator) ![]u8 {
         0,
         @intCast(self.width),
         @intCast(self.height),
-        .rgba,
+        format,
         .unsigned_byte,
         pixels.ptr,
     );

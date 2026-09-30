@@ -216,7 +216,11 @@ pub fn add(
     // POSIX C imports that are used throughout Ghostty on a general basis.
     // (note: errno is C stdlib but we just include it here because that's
     // where it's generally included otherwise)
-    try translate_c.addImportToModule(b, "posix_c", step.root_module, .{
+    //
+    // Skipped on Windows: the MSVC ABI target has no POSIX headers (pwd.h,
+    // unistd.h, etc.) so the translate-c step would fail. All code that
+    // imports "posix_c" only references it in non-Windows comptime branches.
+    if (target.result.os.tag != .windows) try translate_c.addImportToModule(b, "posix_c", step.root_module, .{
         .source = .{ .includes = .{ .files = &.{
             .{ .path = "errno.h" },
             .{ .path = "pwd.h" },
@@ -689,9 +693,18 @@ pub fn add(
         }
 
         switch (self.config.app_runtime) {
-            .none => {},
+            .none, .win32 => {},
             .gtk => try self.addGtkNg(step),
         }
+    } else if (target.result.os.tag == .windows) {
+        // Windows lib builds (ghostty-internal.dll/static.lib) also need
+        // glad since the OpenGL renderer is always compiled in; there is
+        // no EGL on Windows so only the GL loader is required.
+        step.root_module.addIncludePath(b.path("vendor/glad/include/"));
+        step.root_module.addCSourceFile(.{
+            .file = b.path("vendor/glad/src/gl.c"),
+            .flags = &.{},
+        });
     }
 
     self.help_strings.addImport(step);

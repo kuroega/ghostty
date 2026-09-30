@@ -2332,7 +2332,7 @@ keybind: Keybinds = .{},
 ///    Never show the tab bar. Tabs are only accessible via the tab
 ///    overview or by keybind actions.
 ///
-/// Currently only supported on Linux (GTK).
+/// Currently supported on Linux (GTK) and Windows (Win32).
 @"window-show-tab-bar": WindowShowTabBar = .auto,
 
 /// Background color for the window titlebar. This only takes effect if
@@ -4786,8 +4786,12 @@ pub fn finalize(self: *Config) !void {
             switch (builtin.os.tag) {
                 .windows => {
                     if (self.command == null) {
-                        log.warn("no default shell found, will default to using cmd", .{});
-                        self.command = .{ .shell = "cmd.exe" };
+                        // PowerShell is a far more capable interactive
+                        // shell than cmd.exe on modern Windows, so we use
+                        // it as the default. Users can still override this
+                        // with `command`.
+                        log.info("no shell configured, defaulting to PowerShell", .{});
+                        self.command = .{ .shell = "powershell.exe" };
                     }
 
                     if (wd == .home) {
@@ -4833,7 +4837,7 @@ pub fn finalize(self: *Config) !void {
 
     // Apprt-specific defaults
     switch (build_config.app_runtime) {
-        .none => {},
+        .none, .win32 => {},
         .gtk => {
             switch (self.@"gtk-single-instance") {
                 .true, .false => {},

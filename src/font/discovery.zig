@@ -1159,6 +1159,22 @@ pub const Windows = struct {
             if (self.desc.family) |family| {
                 if (!familyMatches(face, family)) return false;
             }
+            const ft = @import("freetype").c;
+            const handle = face.face.handle.*;
+            const bold = handle.style_flags & ft.FT_STYLE_FLAG_BOLD != 0;
+            const italic = handle.style_flags & ft.FT_STYLE_FLAG_ITALIC != 0;
+            if (self.desc.style) |style| {
+                // An explicit style can intentionally select a bold or italic
+                // face for regular text. Only constrain traits requested true.
+                const actual = handle.style_name orelse return false;
+                if (!std.ascii.eqlIgnoreCase(std.mem.span(actual), style)) return false;
+                if (self.desc.bold and !bold) return false;
+                if (self.desc.italic and !italic) return false;
+            } else {
+                // Directory order is not a style preference. In particular,
+                // Bold.ttf often precedes Regular.ttf for the same family.
+                if (self.desc.bold != bold or self.desc.italic != italic) return false;
+            }
             if (self.desc.codepoint != 0) {
                 if (face.glyphIndex(self.desc.codepoint) == null) return false;
             }
@@ -1391,6 +1407,34 @@ test "coretext sorting" {
         var buf: [1024]u8 = undefined;
         const name = try res.name(&buf);
         try testing.expectEqualStrings("SF Pro Bold Italic", name);
+    }
+}
+
+test "windows font discovery selects styles" {
+    if (options.backend != .freetype_windows) return error.SkipZigTest;
+
+    const testing = std.testing;
+    const ft = @import("freetype").c;
+    var lib = try Library.init(testing.allocator);
+    defer lib.deinit();
+    var win = Windows.init(lib);
+    defer win.deinit();
+
+    // Arial's four faces are available on stock Windows installations.
+    for ([_]Descriptor{
+        .{ .family = "Arial" },
+        .{ .family = "Arial", .bold = true },
+        .{ .family = "Arial", .italic = true },
+        .{ .family = "Arial", .bold = true, .italic = true },
+        .{ .family = "Arial", .style = "Bold" },
+    }) |desc| {
+        var it = try win.discover(testing.allocator, desc);
+        defer it.deinit();
+        var face = (try it.next()) orelse return error.TestFontNotFound;
+        defer face.deinit();
+        const handle = face.win.?.peek.face.handle.*;
+        try testing.expectEqual(desc.bold or desc.style != null, handle.style_flags & ft.FT_STYLE_FLAG_BOLD != 0);
+        try testing.expectEqual(desc.italic, handle.style_flags & ft.FT_STYLE_FLAG_ITALIC != 0);
     }
 }
 

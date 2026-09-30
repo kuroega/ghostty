@@ -9,6 +9,7 @@
 //! implementations.
 pub const Dmabuf = @This();
 pub const std = @import("std");
+const builtin = @import("builtin");
 
 /// The maximum number of planes in a DMABUF that we support.
 /// This matches the maximum found in apprts such as GTK.
@@ -41,7 +42,10 @@ pub const Planes = struct {
     count: u8,
 
     /// File descriptor for each plane.
-    fds: [max_planes]std.posix.fd_t = @splat(-1),
+    /// On Windows this is never used (DMA-BUF is a Linux mechanism) but
+    /// the type must compile; we use an int-sized placeholder so the
+    /// sentinel value and comparisons below behave identically.
+    fds: [max_planes]Fd = @splat(invalid_fd),
 
     /// Offset into the DMABUF where each plane starts, in bytes.
     offsets: [max_planes]c_int = @splat(0),
@@ -49,10 +53,28 @@ pub const Planes = struct {
     /// Strides of each plane, in bytes.
     strides: [max_planes]c_int = @splat(0),
 
+    /// The platform file descriptor type. On Windows, `std.posix.fd_t`
+    /// is a HANDLE (pointer) so the integer sentinel/comparisons below
+    /// don't compile. DMA-BUFs are never created on Windows so the
+    /// value is never used there.
+    pub const Fd = if (builtin.os.tag == .windows) i32 else std.posix.fd_t;
+
+    /// The invalid sentinel value for `Fd`.
+    pub const invalid_fd: Fd = if (builtin.os.tag == .windows) -1 else -1;
+
+    /// Close an open fd.
+    fn closeFd(fd: Fd) void {
+        switch (builtin.os.tag) {
+            // DMA-BUF planes are never created or closed on Windows.
+            .windows => unreachable,
+            else => _ = std.posix.system.close(fd),
+        }
+    }
+
     /// Close all valid fds.
     pub fn deinit(self: Planes) void {
         for (self.fds[0..self.count]) |fd| {
-            if (fd >= 0) _ = std.posix.system.close(fd);
+            if (fd >= 0) closeFd(fd);
         }
     }
 
@@ -63,7 +85,7 @@ pub const Planes = struct {
         var n_valid: usize = 0;
         while (n_valid < self.count) : (n_valid += 1) {
             if (self.fds[n_valid] < 0) {
-                for (self.fds[0..n_valid]) |bad| _ = std.posix.system.close(bad);
+                for (self.fds[0..n_valid]) |bad| closeFd(bad);
                 return error.BadDmabuf;
             }
         }

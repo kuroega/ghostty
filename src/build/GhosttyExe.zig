@@ -46,6 +46,12 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
             exe.root_module.addWin32ResourceFile(.{
                 .file = b.path("dist/windows/ghostty.rc"),
             });
+
+            // Zig exports our C main as "main"; the MSVC CRT's
+            // mainCRTStartup entry calls it. Without this, lld-link
+            // defaults to WinMainCRTStartup (GUI subsystem) and fails
+            // with an undefined WinMain symbol.
+            exe.entry = .{ .symbol_name = "mainCRTStartup" };
         },
 
         else => {},

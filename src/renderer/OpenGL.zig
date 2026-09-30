@@ -2,6 +2,7 @@
 pub const OpenGL = @This();
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const gl = @import("opengl");
 const egl = gl.egl;
@@ -12,6 +13,7 @@ const configpkg = @import("../config.zig");
 const rendererpkg = @import("../renderer.zig");
 const Renderer = rendererpkg.GenericRenderer(OpenGL);
 const Dmabuf = @import("Dmabuf.zig");
+const wgl_context = @import("../os/wgl_context.zig");
 
 pub const GraphicsAPI = OpenGL;
 pub const Target = @import("opengl/Target.zig");
@@ -43,10 +45,44 @@ alloc: std.mem.Allocator,
 /// Alpha blending mode
 blending: configpkg.Config.AlphaBlending,
 
-egl_display: *gl.egl.Display,
-egl_context: *gl.egl.Context,
+/// EGL display/context (Linux). On Windows we use a WGL context
+/// instead (see `wgl`), because there is no guaranteed EGL.
+egl_display: *gl.egl.Display = undefined,
+egl_context: *gl.egl.Context = undefined,
+
+/// WGL context (Windows).
+wgl: ?WglContext = null,
+
+pub const WglContext = wgl_context;
+
+const use_wgl = builtin.os.tag == .windows;
 
 pub fn init(alloc: Allocator, opts: rendererpkg.Options) !OpenGL {
+    if (comptime use_wgl) {
+        return initWgl(alloc, opts);
+    }
+    return initEgl(alloc, opts);
+}
+
+fn initWgl(alloc: Allocator, opts: rendererpkg.Options) !OpenGL {
+    const ctx = try wgl_context.init();
+    errdefer ctx.deinit();
+
+    // Make current briefly to load glad function pointers on this
+    // thread. threadEnter will make it current again on the render
+    // thread.
+    try ctx.makeCurrent();
+    defer ctx.releaseCurrent();
+    try prepareContext(&wgl_context.getProcAddress);
+
+    return .{
+        .alloc = alloc,
+        .blending = opts.config.blending,
+        .wgl = ctx,
+    };
+}
+
+fn initEgl(alloc: Allocator, opts: rendererpkg.Options) !OpenGL {
     try egl.load();
 
     const display: *egl.Display = try .initPlatform(
@@ -107,6 +143,13 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !OpenGL {
 }
 
 pub fn deinit(self: *OpenGL) void {
+    if (comptime use_wgl) {
+        if (self.wgl) |ctx| ctx.deinit();
+        self.wgl = null;
+        self.* = undefined;
+        return;
+    }
+
     self.egl_display.releaseCurrent();
     self.egl_context.destroy(self.egl_display) catch {};
 
@@ -221,6 +264,12 @@ fn prepareContext(getProcAddress: anytype) !void {
 /// function pointers so all subsequent GL work on this thread is valid.
 pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
     _ = surface;
+    if (comptime use_wgl) {
+        try self.wgl.?.makeCurrent();
+        // Load our function pointers for this thread's threadlocal.
+        try prepareContext(&wgl_context.getProcAddress);
+        return;
+    }
     try self.egl_display.makeCurrent(null, null, self.egl_context);
     // Load our function pointers for this thread's threadlocal.
     try prepareContext(&gl.egl.getProcAddress);
@@ -230,6 +279,11 @@ pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
 /// thread; unbinds the context from this thread so it can be destroyed on
 /// the main thread.
 pub fn threadExit(self: *OpenGL) void {
+    if (comptime use_wgl) {
+        self.wgl.?.releaseCurrent();
+        gl.glad.unload();
+        return;
+    }
     self.egl_display.releaseCurrent();
     gl.glad.unload();
 }
@@ -301,21 +355,33 @@ pub fn present(
     presentation_health: rendererpkg.Health,
 ) !ExportedFrame {
     // We only export DMABUFs when the apprt can present them.
-    // Otherwise, use CPU buffers.
-    if (presentation_health == .healthy) {
-        if (target.exportDmabuf(self.egl_display, self.egl_context)) |dmabuf| {
-            return .{ .dmabuf = dmabuf };
-        } else |_| {
-            log.warn("failed to export DMABUF, falling back to CPU presentation", .{});
+    // Otherwise, use CPU buffers. On Windows there is no DMA-BUF;
+    // we always present via CPU buffers.
+    if (comptime !use_wgl) {
+        if (presentation_health == .healthy) {
+            if (target.exportDmabuf(self.egl_display, self.egl_context)) |dmabuf| {
+                return .{ .dmabuf = dmabuf };
+            } else |_| {
+                log.warn("failed to export DMABUF, falling back to CPU presentation", .{});
+            }
         }
     }
 
-    return .{ .memory = .{
-        .width = @intCast(target.width),
-        .height = @intCast(target.height),
-        .pixels = try target.readPixelsAlloc(self.alloc),
-        .alloc = self.alloc,
-    } };
+    return .{
+        .memory = .{
+            .width = @intCast(target.width),
+            .height = @intCast(target.height),
+            // On Windows the apprt presents this with GDI, which wants BGRA
+            // pixels in a bottom-up buffer. Reading BGRA here (and using a
+            // bottom-up DIB) avoids an expensive CPU swizzle/flip of the
+            // whole framebuffer on every single frame.
+            .pixels = if (comptime use_wgl)
+                try target.readPixelsAllocFormat(self.alloc, .bgra)
+            else
+                try target.readPixelsAlloc(self.alloc),
+            .alloc = self.alloc,
+        },
+    };
 }
 
 /// A finished frame exported for presentation by the apprt.
@@ -323,8 +389,12 @@ pub const ExportedFrame = union(enum) {
     dmabuf: Dmabuf,
     memory: Memory,
 
-    /// RGBA8 pixel data with premultiplied alpha, tightly packed
+    /// Pixel data with premultiplied alpha, tightly packed
     /// (`width * 4` bytes per row), in CPU memory.
+    ///
+    /// On most platforms this is top-down RGBA8. On Windows (WGL) it is
+    /// bottom-up BGRA8 because it is produced by `glReadPixels` with
+    /// `GL_BGRA` and consumed directly by GDI.
     pub const Memory = struct {
         width: u32,
         height: u32,

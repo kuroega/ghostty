@@ -16,6 +16,7 @@ pub const action = @import("apprt/action.zig");
 pub const ipc = @import("apprt/ipc.zig");
 pub const gtk = @import("apprt/gtk.zig");
 pub const none = @import("apprt/none.zig");
+pub const win32 = @import("apprt/win32.zig");
 pub const browser = @import("apprt/browser.zig");
 pub const embedded = @import("apprt/embedded.zig");
 pub const surface = @import("apprt/surface.zig");
@@ -44,6 +45,7 @@ pub const runtime = switch (build_config.artifact) {
     .exe => switch (build_config.app_runtime) {
         .none => none,
         .gtk => gtk,
+        .win32 => win32,
     },
     .lib => embedded,
     .wasm_module => browser,
@@ -57,4 +59,10 @@ test {
     _ = runtime;
     _ = action;
     _ = structs;
+    // The test artifact uses the embedded runtime. Explicitly include the
+    // native Windows tab/chrome unit tests without instantiating its app.
+    if (@import("builtin").os.tag == .windows) {
+        _ = @import("apprt/win32/Window.zig");
+        _ = @import("apprt/win32/Chrome.zig");
+    }
 }
