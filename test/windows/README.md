@@ -23,6 +23,28 @@ chunking, placement, scrolling, resize, deletion, and shutdown. Session/resume
 acceptance uses ordinary `pi.cmd` on temporary copies of the source session.
 The previous JavaScript workaround and private decoder have been removed.
 
+## Right-click selection copying
+
+The Win32 runtime does not implement context menus. Its default
+`right-click-action` is therefore `copy-or-paste`, matching Windows Terminal:
+left-drag to select, right-click to copy and clear the selection, then
+right-click without a selection to paste. Other platforms retain the
+`context-menu` default; explicit configuration overrides are respected.
+
+```text
+zig build -Dapp-runtime=win32 -Doptimize=ReleaseFast
+python test/windows-right-click.py --exe zig-out/bin/ghostty.exe
+python test/windows-right-click.py --exe zig-out/bin/ghostty.exe --action copy
+python test/windows-right-click.py --exe zig-out/bin/ghostty.exe --action ignore
+```
+
+The native regression sends mouse messages only to its own terminal, checks
+that dragging alone does not copy, checks the exact Unicode clipboard text
+after right-click, and verifies paste through the child process's stdin.
+It temporarily replaces the clipboard and restores Unicode text only;
+run with no valuable non-text clipboard contents. The pre-fix default fails
+the copy check because it requests an unimplemented context menu.
+
 ## test_dll_init.c
 
 Regression test for the DLL CRT initialization fix. Loads
