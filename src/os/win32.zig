@@ -265,6 +265,7 @@ pub const SRCCOPY: DWORD = 0x00CC0020;
 
 pub const exp = struct {
     // user32
+    pub extern "user32" fn LoadCursorW(hInstance: ?HINSTANCE, lpCursorName: LPCWSTR) callconv(.winapi) ?HCURSOR;
     pub extern "user32" fn RegisterClassW(lpWndClass: *const WNDCLASSW) callconv(.winapi) WORD;
     pub extern "user32" fn CreateWindowExW(
         dwExStyle: DWORD,

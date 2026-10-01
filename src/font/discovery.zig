@@ -1137,30 +1137,43 @@ pub const Windows = struct {
             // Probe each face in the file.
             var face_index: i32 = 0;
             while (face_index < max_faces) : (face_index += 1) {
-                var face = Face.initFile(
+                // Most candidates do not match. Probe metadata/CMap with
+                // FreeType alone: do not size a font, create a HarfBuzz font,
+                // allocate a glyph mutex, or apply shaping quirks to every
+                // installed font just to reject it.
+                const matched = blk: {
+                    self.lib.mutex.lockUncancelable(global.io());
+                    defer self.lib.mutex.unlock(global.io());
+                    const probe = self.lib.lib.initFace(full_path, face_index) catch break;
+                    defer probe.deinit();
+                    if (self.desc.codepoint != 0) probe.selectCharmap(.unicode) catch continue;
+                    break :blk self.matches(probe);
+                };
+                if (!matched) continue;
+
+                const face = Face.initFile(
                     self.lib,
                     full_path,
                     face_index,
                     .{ .size = .{ .points = 12 } },
-                ) catch break;
-
-                if (self.matches(&face)) {
-                    return try self.makeDeferred(face, full_path, face_index);
+                ) catch continue;
+                errdefer {
+                    var owned = face;
+                    owned.deinit();
                 }
-
-                face.deinit();
+                return try self.makeDeferred(face, full_path, face_index);
             }
 
             return null;
         }
 
         /// Check whether the given face matches the descriptor.
-        fn matches(self: *const DiscoverIterator, face: *Face) bool {
+        fn matches(self: *const DiscoverIterator, face: @import("freetype").Face) bool {
             if (self.desc.family) |family| {
                 if (!familyMatches(face, family)) return false;
             }
             const ft = @import("freetype").c;
-            const handle = face.face.handle.*;
+            const handle = face.handle.*;
             const bold = handle.style_flags & ft.FT_STYLE_FLAG_BOLD != 0;
             const italic = handle.style_flags & ft.FT_STYLE_FLAG_ITALIC != 0;
             if (self.desc.style) |style| {
@@ -1176,7 +1189,7 @@ pub const Windows = struct {
                 if (self.desc.bold != bold or self.desc.italic != italic) return false;
             }
             if (self.desc.codepoint != 0) {
-                if (face.glyphIndex(self.desc.codepoint) == null) return false;
+                if (face.getCharIndex(self.desc.codepoint) == null) return false;
             }
             return true;
         }
@@ -1215,13 +1228,13 @@ pub const Windows = struct {
     /// Compare a face's family against a requested family name. Checks
     /// FreeType's family_name first, then falls back to the SFNT name
     /// table entry.
-    fn familyMatches(face: *Face, family: [:0]const u8) bool {
-        const ft_family: ?[*:0]const u8 = face.face.handle.*.family_name;
+    fn familyMatches(face: @import("freetype").Face, family: [:0]const u8) bool {
+        const ft_family: ?[*:0]const u8 = face.handle.*.family_name;
         if (ft_family) |f| {
             if (std.ascii.eqlIgnoreCase(std.mem.span(f), family)) return true;
         }
         var buf: [256]u8 = undefined;
-        const sfnt = face.name(&buf) catch "";
+        const sfnt = Face.nameFromFace(face, &buf) catch "";
         return sfnt.len > 0 and std.ascii.eqlIgnoreCase(sfnt, family);
     }
 };
@@ -1436,6 +1449,24 @@ test "windows font discovery selects styles" {
         try testing.expectEqual(desc.bold or desc.style != null, handle.style_flags & ft.FT_STYLE_FLAG_BOLD != 0);
         try testing.expectEqual(desc.italic, handle.style_flags & ft.FT_STYLE_FLAG_ITALIC != 0);
     }
+}
+
+test "windows font discovery metadata probes codepoints" {
+    if (options.backend != .freetype_windows) return error.SkipZigTest;
+
+    var lib = try Library.init(std.testing.allocator);
+    defer lib.deinit();
+    var win = Windows.init(lib);
+    defer win.deinit();
+    var it = try win.discover(std.testing.allocator, .{ .family = "Arial", .codepoint = 'A' });
+    defer it.deinit();
+    var face = (try it.next()) orelse return error.TestFontNotFound;
+    defer face.deinit();
+    try std.testing.expect(face.hasCodepoint('A', null));
+
+    var missing = try win.discover(std.testing.allocator, .{ .family = "Arial", .codepoint = 0x10FFFF });
+    defer missing.deinit();
+    try std.testing.expect((try missing.next()) == null);
 }
 
 test "windows" {

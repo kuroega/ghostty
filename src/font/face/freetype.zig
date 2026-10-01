@@ -156,11 +156,16 @@ pub const Face = struct {
     /// but sometimes allocation isn't required and a static string is
     /// returned.
     pub fn name(self: *const Face, buf: []u8) Allocator.Error![]const u8 {
-        const count = self.face.getSfntNameCount();
+        return nameFromFace(self.face, buf);
+    }
+
+    /// Read family metadata without constructing a sized/shaping font.
+    pub fn nameFromFace(face: freetype.Face, buf: []u8) Allocator.Error![]const u8 {
+        const count = face.getSfntNameCount();
 
         // We look for the font family entry.
         for (0..count) |i| {
-            const entry = self.face.getSfntName(i) catch continue;
+            const entry = face.getSfntName(i) catch continue;
             if (entry.name_id == freetype.c.TT_NAME_ID_FONT_FAMILY) {
                 const string = entry.string[0..entry.string_len];
                 // There are other encodings that are something other than UTF-8

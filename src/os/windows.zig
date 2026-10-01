@@ -39,6 +39,7 @@ pub const UNICODE_STRING = windows.UNICODE_STRING;
 pub const LPPROC_THREAD_ATTRIBUTE_LIST = ?*anyopaque;
 pub const SECURITY_ATTRIBUTES = windows.SECURITY_ATTRIBUTES;
 pub const STARTF_USESTDHANDLES = windows.STARTF_USESTDHANDLES;
+pub const STARTF_FORCEOFFFEEDBACK: DWORD = 0x00000080;
 pub const STARTUPINFOW = windows.STARTUPINFOW;
 
 pub const OVERLAPPED = extern struct {
@@ -181,7 +182,7 @@ pub const exp = struct {
         ) callconv(.winapi) BOOL;
         // Duplicated here because lpCommandLine is not marked optional in zig std
         pub extern "kernel32" fn CreateProcessW(
-            lpApplicationName: ?LPWSTR,
+            lpApplicationName: ?LPCWSTR,
             lpCommandLine: ?LPWSTR,
             lpProcessAttributes: ?*SECURITY_ATTRIBUTES,
             lpThreadAttributes: ?*SECURITY_ATTRIBUTES,

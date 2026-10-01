@@ -18,7 +18,9 @@ const kernel32 = struct {
 
 pub const Api = struct {
     library: w.HANDLE,
-    create: *const fn (w.COORD, w.HANDLE, w.HANDLE, w.DWORD, *w.HPCON) callconv(.winapi) w.HRESULT,
+    create_native: *const fn (w.COORD, w.HANDLE, w.HANDLE, w.DWORD, *w.HPCON) callconv(.winapi) w.HRESULT,
+    pack: @import("conpty_host.zig").Pack,
+    host_path: [:0]const u16,
     resize: *const fn (w.HPCON, w.COORD) callconv(.winapi) w.HRESULT,
     close: *const fn (w.HPCON) callconv(.winapi) void,
 
@@ -29,6 +31,7 @@ pub const Api = struct {
         MissingConsoleHost,
         LoadLibraryFailed,
         MissingExport,
+        OutOfMemory,
     };
 
     pub fn load() LoadError!Api {
@@ -69,6 +72,8 @@ pub const Api = struct {
             try append(&path, &len, host_suffix);
             if (kernel32.GetFileAttributesW(path[0..len :0].ptr) == 0xffffffff) return error.MissingConsoleHost;
         }
+        const host_path = try std.heap.page_allocator.dupeZ(u16, path[0..len]);
+        errdefer std.heap.page_allocator.free(host_path);
         len = directory_len;
         try append(&path, &len, std.unicode.utf8ToUtf16LeStringLiteral("\\conpty.dll"));
         // DLL_LOAD_DIR + SYSTEM32: dependent DLLs cannot be resolved from CWD.
@@ -79,14 +84,29 @@ pub const Api = struct {
         errdefer _ = kernel32.FreeLibrary(library);
         return .{
             .library = library,
-            .create = @ptrCast(kernel32.GetProcAddress(library, "ConptyCreatePseudoConsole") orelse return error.MissingExport),
+            .create_native = @ptrCast(kernel32.GetProcAddress(library, "ConptyCreatePseudoConsole") orelse return error.MissingExport),
+            .pack = @ptrCast(kernel32.GetProcAddress(library, "ConptyPackPseudoConsole") orelse return error.MissingExport),
+            .host_path = host_path,
             .resize = @ptrCast(kernel32.GetProcAddress(library, "ConptyResizePseudoConsole") orelse return error.MissingExport),
             .close = @ptrCast(kernel32.GetProcAddress(library, "ConptyClosePseudoConsole") orelse return error.MissingExport),
         };
     }
 
+    /// The packaged factory launches headless OpenConsole without disabling
+    /// Windows GUI startup feedback. Launch it explicitly for flags=0 (our
+    /// terminal path), then let the DLL pack/own the native handles as usual.
+    pub fn create(self: Api, size: w.COORD, input: w.HANDLE, output: w.HANDLE, flags: w.DWORD, console: *w.HPCON) w.HRESULT {
+        if (flags != 0) return self.create_native(size, input, output, flags, console);
+        console.* = @import("conpty_host.zig").create(self.host_path, self.pack, size, input, output) catch |err| {
+            log.err("failed to start packaged console host without startup feedback err={}", .{err});
+            return @bitCast(@as(u32, 0x80004005)); // E_FAIL
+        };
+        return w.S_OK;
+    }
+
     /// Call only after every HPCON created through this API has been closed.
     pub fn deinit(self: Api) void {
+        std.heap.page_allocator.free(self.host_path);
         _ = kernel32.FreeLibrary(self.library);
     }
 };

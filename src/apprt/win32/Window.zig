@@ -26,6 +26,7 @@ pub fn init(self: *Window, app: *rt.App) !void {
     const wc: win32.WNDCLASSW = .{
         .style = win32.CS_HREDRAW | win32.CS_VREDRAW,
         .lpfnWndProc = wndProc,
+        .hCursor = win32.exp.LoadCursorW(null, @ptrFromInt(32512)), // IDC_ARROW
         .hInstance = win32.exp.GetModuleHandleW(null) orelse return error.GetModuleFailed,
         .hbrBackground = @ptrFromInt(win32.COLOR_BTNFACE + 1),
         .lpszClassName = class_name.ptr,

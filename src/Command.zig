@@ -397,7 +397,10 @@ fn startWindows(self: *Command, arena: Allocator) !void {
             .hStdError = stderr,
             .hStdOutput = stdout,
             .hStdInput = stdin,
-            .dwFlags = windows.STARTF_USESTDHANDLES,
+            // Embedded terminal children have no GUI message loop to
+            // dismiss Windows' startup feedback. Do not display a global
+            // app-starting cursor while launching the shell.
+            .dwFlags = windows.STARTF_USESTDHANDLES | windows.STARTF_FORCEOFFFEEDBACK,
             .lpReserved = null,
             .lpDesktop = null,
             .lpTitle = null,

@@ -692,6 +692,9 @@ pub const Surface = struct {
         const wc: win32.WNDCLASSW = .{
             .style = win32.CS_HREDRAW | win32.CS_VREDRAW | win32.CS_OWNDC,
             .lpfnWndProc = wndProc,
+            // A null class cursor leaves the previous cursor unchanged,
+            // including the shell's animated startup-feedback cursor.
+            .hCursor = win32.exp.LoadCursorW(null, @ptrFromInt(32512)), // IDC_ARROW
             .hInstance = win32.exp.GetModuleHandleW(null) orelse return error.GetModuleFailed,
             .lpszClassName = class_name.ptr,
         };
