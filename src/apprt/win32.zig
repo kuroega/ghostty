@@ -214,10 +214,37 @@ pub const App = struct {
     surfaces: std.ArrayList(*Surface) = .empty,
     windows: std.ArrayList(*Window) = .empty,
 
-    /// The thread ID of the thread running our message loop. Other
-    /// threads (renderer, io) wake it by posting a message directly to
-    /// this thread's queue.
-    main_thread_id: win32.DWORD = 0,
+    /// A message-only HWND: unlike thread messages, its wakes are dispatched
+    /// by Windows' nested move/resize and menu loops too. It outlives workers.
+    wake_hwnd: win32.HWND = undefined,
+    ticking: bool = false,
+
+    const wake_class = std.unicode.utf8ToUtf16LeStringLiteral("GhosttyWake");
+
+    fn wakeWndProc(hwnd: win32.HWND, msg: win32.UINT, wparam: win32.WPARAM, lparam: win32.LPARAM) callconv(.winapi) win32.LRESULT {
+        if (msg == win32.WM_NCCREATE) {
+            const create: *win32.CREATESTRUCTW = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            _ = win32.exp.SetWindowLongPtrW(hwnd, win32.GWLP_USERDATA, @intCast(@intFromPtr(create.lpCreateParams.?)));
+        }
+        if (msg == win32.WM_GHOSTTY_WAKE) {
+            const pointer = win32.exp.GetWindowLongPtrW(hwnd, win32.GWLP_USERDATA);
+            if (pointer != 0) {
+                const self: *App = @ptrFromInt(@as(usize, @bitCast(pointer)));
+                self.tick() catch |err| log.err("app mailbox tick err={}", .{err});
+            }
+            return 0;
+        }
+        return win32.exp.DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
+
+    fn tick(self: *App) !void {
+        // Core actions may enter another native modal loop. The active drain
+        // will process any newly queued messages when that action returns.
+        if (self.ticking) return;
+        self.ticking = true;
+        defer self.ticking = false;
+        try self.core_app.tick(self);
+    }
 
     pub fn init(
         self: *App,
@@ -237,12 +264,6 @@ pub const App = struct {
             _ = win32.exp.SetProcessDPIAware();
         }
 
-        // Force creation of this thread's message queue. `PostThreadMessageW`
-        // fails for threads without a queue, so a worker thread could race
-        // us if we skipped this.
-        var msg: win32.MSG = undefined;
-        _ = win32.exp.PeekMessageW(&msg, null, 0, 0, win32.PM_NOREMOVE);
-
         const alloc = core_app.alloc;
         // Load our own config like the GTK apprt does (the entrypoint
         // doesn't pass one in).
@@ -255,10 +276,30 @@ pub const App = struct {
         self.* = .{
             .core_app = core_app,
             .config = config_clone,
-            // Capture this AFTER the struct literal above, since
-            // assigning `self.*` would otherwise clobber it.
-            .main_thread_id = win32.exp.GetCurrentThreadId(),
         };
+
+        const wc: win32.WNDCLASSW = .{
+            .style = 0,
+            .lpfnWndProc = wakeWndProc,
+            .hInstance = win32.exp.GetModuleHandleW(null) orelse return error.GetModuleFailed,
+            .lpszClassName = wake_class.ptr,
+        };
+        if (win32.exp.RegisterClassW(&wc) == 0 and
+            std.os.windows.GetLastError() != .CLASS_ALREADY_EXISTS) return error.RegisterClassFailed;
+        self.wake_hwnd = win32.exp.CreateWindowExW(
+            0,
+            wake_class.ptr,
+            wake_class.ptr,
+            0,
+            0,
+            0,
+            0,
+            0,
+            @ptrFromInt(@as(usize, @bitCast(@as(isize, -3)))), // HWND_MESSAGE
+            null,
+            wc.hInstance,
+            self,
+        ) orelse return error.CreateWindowFailed;
     }
 
     pub fn terminate(self: *App) void {
@@ -278,6 +319,8 @@ pub const App = struct {
         }
         self.windows.deinit(self.core_app.alloc);
 
+        // Surface teardown has joined all workers that can post wakes.
+        _ = win32.exp.DestroyWindow(self.wake_hwnd);
         self.config.deinit();
     }
 
@@ -294,19 +337,17 @@ pub const App = struct {
     }
 
     pub fn wakeup(self: *const App) void {
-        // Post to the main thread's queue specifically. `PostMessageW`
-        // with a NULL window posts to the CALLING thread's queue, which
-        // is the wrong queue when this is called from the renderer or io
-        // thread (and was silently dropping wakes).
-        if (win32.exp.PostThreadMessageW(
-            self.main_thread_id,
+        // Thread-only wakes are swallowed by DefWindowProc's modal resize
+        // loop, starving the bounded app mailbox and eventually the workers.
+        if (win32.exp.PostMessageW(
+            self.wake_hwnd,
             win32.WM_GHOSTTY_WAKE,
             0,
             0,
         ) == win32.FALSE) {
             const err = lastError();
-            if (err != .SUCCESS and err != .INVALID_THREAD_ID) {
-                log.warn("PostThreadMessageW failed id={} err={}", .{ self.main_thread_id, err });
+            if (err != .SUCCESS) {
+                log.warn("PostMessageW wake failed err={}", .{err});
             }
         }
     }
@@ -526,7 +567,7 @@ pub const App = struct {
 
             // Drain the core app mailbox after each message batch. The
             // mailbox is how surfaces and termio threads communicate.
-            try self.core_app.tick(self);
+            try self.tick();
 
             // Destroy closed surfaces outside wndProc and mailbox dispatch,
             // where no callback can still be using their core state.
