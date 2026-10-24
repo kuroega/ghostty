@@ -2126,6 +2126,16 @@ pub fn semanticPrompt(
                 self.flags.shell_redraws_prompt = v;
             }
 
+            // A new prompt means the shell owns the terminal again, so
+            // xterm's modifyOtherKeys mode 2 can only be left over from a
+            // program that exited without resetting it (a killed TUI, a
+            // dropped ssh connection). Shells such as fish decode the
+            // resulting `CSI 27;2;65~` for shift+A transparently, so the
+            // leak goes unnoticed until a program that doesn't understand
+            // it, such as Windows' ConPTY over ssh, silently drops every
+            // shifted character. Shells don't set this mode themselves.
+            self.flags.modify_other_keys_2 = false;
+
             click: {
                 // Handle click_events as a priority over cl. click_events
                 // is another Kitty-specific extension that converts clicks
@@ -15250,6 +15260,29 @@ test "Terminal: semantic prompt" {
         const row = list_cell.row;
         try testing.expectEqual(.none, row.semantic_prompt);
     }
+}
+
+test "Terminal: semantic prompt resets leaked modifyOtherKeys" {
+    const alloc = testing.allocator;
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
+    defer t.deinit(alloc);
+
+    // A program enabled modifyOtherKeys mode 2 and exited without
+    // resetting it; the shell's next prompt clears it.
+    t.flags.modify_other_keys_2 = true;
+    try t.semanticPrompt(.init(.fresh_line_new_prompt));
+    try testing.expect(!t.flags.modify_other_keys_2);
+
+    // OSC 133;N performs the A action too.
+    t.flags.modify_other_keys_2 = true;
+    try t.semanticPrompt(.init(.new_command));
+    try testing.expect(!t.flags.modify_other_keys_2);
+
+    // Prompt continuation markers don't.
+    t.flags.modify_other_keys_2 = true;
+    try t.semanticPrompt(.init(.prompt_start));
+    try testing.expect(t.flags.modify_other_keys_2);
 }
 
 test "Terminal: semantic prompt continuations" {
