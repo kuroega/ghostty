@@ -476,6 +476,7 @@ pub const Handler = struct {
             .protected_mode_iso => self.terminal.setProtectedMode(.iso),
             .protected_mode_dec => self.terminal.setProtectedMode(.dec),
             .mouse_shift_capture => self.terminal.flags.mouse_shift_capture = if (value) .true else .false,
+            .win32_input_mode => self.terminal.flags.win32_input_mode = value,
             .kitty_keyboard_push => self.terminal.screens.active.kitty_keyboard.push(value.flags),
             .kitty_keyboard_pop => self.terminal.screens.active.kitty_keyboard.pop(@intCast(value)),
             .kitty_keyboard_set => self.terminal.screens.active.kitty_keyboard.set(.set, value.flags),

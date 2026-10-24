@@ -108,6 +108,13 @@ flags: packed struct {
     // this to false and we act in mode 1 by default.
     modify_other_keys_2: bool = false,
 
+    /// Set while Windows' ConPTY has win32-input-mode (DEC mode 9001)
+    /// requested, meaning ConPTY is reading our keys, such as over `ssh`
+    /// to a Windows host. ConPTY passes keyboard protocol requests from
+    /// Windows programs through to us but can't decode the keys they
+    /// produce, so the key encoder falls back to legacy encoding.
+    win32_input_mode: bool = false,
+
     /// The mouse event mode and format. These are set to the last
     /// set mode in modes. You can't get the right event/format to use
     /// based on modes alone because modes don't show you what order
@@ -2135,6 +2142,10 @@ pub fn semanticPrompt(
             // it, such as Windows' ConPTY over ssh, silently drops every
             // shifted character. Shells don't set this mode themselves.
             self.flags.modify_other_keys_2 = false;
+
+            // Likewise a ConPTY that is still marked as reading our keys
+            // is gone (a dropped ssh connection never sends its reset).
+            self.flags.win32_input_mode = false;
 
             click: {
                 // Handle click_events as a priority over cl. click_events
@@ -15283,6 +15294,19 @@ test "Terminal: semantic prompt resets leaked modifyOtherKeys" {
     t.flags.modify_other_keys_2 = true;
     try t.semanticPrompt(.init(.prompt_start));
     try testing.expect(t.flags.modify_other_keys_2);
+}
+
+test "Terminal: semantic prompt resets leaked win32-input-mode" {
+    const alloc = testing.allocator;
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
+    defer t.deinit(alloc);
+
+    // An ssh connection to ConPTY dropped before it could reset the
+    // mode; the local shell's next prompt clears it.
+    t.flags.win32_input_mode = true;
+    try t.semanticPrompt(.init(.fresh_line_new_prompt));
+    try testing.expect(!t.flags.win32_input_mode);
 }
 
 test "Terminal: semantic prompt continuations" {

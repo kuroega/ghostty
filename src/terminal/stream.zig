@@ -22,6 +22,12 @@ const MouseShape = @import("mouse.zig").Shape;
 
 const log = std.log.scoped(.stream);
 
+/// DEC private mode 9001, Windows Terminal's win32-input-mode. We don't
+/// implement it, but Windows' ConPTY requests it on startup and releases
+/// it on exit, so it tells us when ConPTY is the program reading our keys.
+/// It isn't a `modes.Mode` because we must not report it as supported.
+const win32_input_mode = 9001;
+
 /// Flip this to true when you want verbose debug output for
 /// debugging terminal stream issues. In addition to louder
 /// output this will also disable the SIMD optimizations in
@@ -91,6 +97,7 @@ pub const Action = union(Key) {
     restore_cursor,
     modify_key_format: ansi.ModifyKeyFormat,
     mouse_shift_capture: bool,
+    win32_input_mode: bool,
     protected_mode_off,
     protected_mode_iso,
     protected_mode_dec,
@@ -193,6 +200,7 @@ pub const Action = union(Key) {
             "restore_cursor",
             "modify_key_format",
             "mouse_shift_capture",
+            "win32_input_mode",
             "protected_mode_off",
             "protected_mode_iso",
             "protected_mode_dec",
@@ -2010,6 +2018,8 @@ pub fn Stream(comptime H: type) type {
                     for (input.params) |mode_int| {
                         if (modes.modeFromInt(mode_int, ansi_mode)) |mode| {
                             self.handler.vt(.set_mode, .{ .mode = mode });
+                        } else if (!ansi_mode and mode_int == win32_input_mode) {
+                            self.handler.vt(.win32_input_mode, true);
                         } else {
                             logUnsupportedOnce("unimplemented mode: {}", .{mode_int}, mode_int);
                         }
@@ -2031,6 +2041,8 @@ pub fn Stream(comptime H: type) type {
                     for (input.params) |mode_int| {
                         if (modes.modeFromInt(mode_int, ansi_mode)) |mode| {
                             self.handler.vt(.reset_mode, .{ .mode = mode });
+                        } else if (!ansi_mode and mode_int == win32_input_mode) {
+                            self.handler.vt(.win32_input_mode, false);
                         } else {
                             logUnsupportedOnce("unimplemented mode: {}", .{mode_int}, mode_int);
                         }
@@ -3852,6 +3864,39 @@ test "stream: XTSHIFTESCAPE" {
     // Invalid and ignored by the handler
     s.nextSlice("\x1B[1 s");
     try testing.expect(s.handler.escape.? == true);
+}
+
+test "stream: win32-input-mode" {
+    const H = struct {
+        enabled: ?bool = null,
+
+        pub fn vt(
+            self: *@This(),
+            comptime action: streampkg.Action.Tag,
+            value: streampkg.Action.Value(action),
+        ) void {
+            switch (action) {
+                .win32_input_mode => self.enabled = value,
+                else => {},
+            }
+        }
+    };
+
+    var s: Stream(H) = .init(.{ .handler = .{} });
+    s.nextSlice("\x1B[?9001h");
+    try testing.expect(s.handler.enabled.? == true);
+
+    s.nextSlice("\x1B[?9001l");
+    try testing.expect(s.handler.enabled.? == false);
+
+    // Alongside other modes, as ConPTY sends it.
+    s.nextSlice("\x1B[?9001;1004h");
+    try testing.expect(s.handler.enabled.? == true);
+
+    // The ANSI mode of the same number is something else.
+    s.handler.enabled = null;
+    s.nextSlice("\x1B[9001h");
+    try testing.expect(s.handler.enabled == null);
 }
 
 test "stream: change window title with invalid utf-8" {

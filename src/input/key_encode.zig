@@ -57,7 +57,7 @@ pub const Options = struct {
     /// Note that `macos_option_as_alt` cannot be determined from
     /// terminal state so it must be set manually after this call.
     pub fn fromTerminal(t: *const Terminal) Options {
-        return .{
+        var opts: Options = .{
             .alt_esc_prefix = t.modes.get(.alt_esc_prefix),
             .cursor_key_application = t.modes.get(.cursor_keys),
             .keypad_key_application = t.modes.get(.keypad_keys),
@@ -69,6 +69,20 @@ pub const Options = struct {
             // These can't be known from the terminal state.
             .macos_option_as_alt = .false,
         };
+
+        // Windows' ConPTY passes modifyOtherKeys and Kitty keyboard
+        // requests from the programs behind it straight through to us,
+        // but its own input parser understands neither encoding: it drops
+        // `CSI 27;5;119~` and `CSI 119;5u` for ctrl+w. Programs such as
+        // Neovim also enable one and reset the other on exit, leaking the
+        // mode into the shell. While ConPTY reads our keys, only legacy
+        // encoding gets through, so ignore both.
+        if (t.flags.win32_input_mode) {
+            opts.modify_other_keys_state_2 = false;
+            opts.kitty_flags = .disabled;
+        }
+
+        return opts;
     }
 };
 
@@ -2334,6 +2348,34 @@ test "legacy: ctrl+char with modify other state 2" {
         .modify_other_keys_state_2 = true,
     });
     try testing.expectEqualStrings("\x1b[27;5;112~", writer.buffered());
+}
+
+test "options from terminal: ConPTY gets legacy keys" {
+    const alloc = testing.allocator;
+    var t: Terminal = try .init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
+    defer t.deinit(alloc);
+
+    // A program behind ConPTY enabled both keyboard protocols.
+    t.flags.modify_other_keys_2 = true;
+    t.screens.active.kitty_keyboard.push(.{ .disambiguate = true });
+    var opts: Options = .fromTerminal(&t);
+    try testing.expect(opts.modify_other_keys_state_2);
+    try testing.expect(opts.kitty_flags.disambiguate);
+
+    // But ConPTY reads our keys, so ctrl+w must stay a C0 byte.
+    t.flags.win32_input_mode = true;
+    opts = .fromTerminal(&t);
+    try testing.expect(!opts.modify_other_keys_state_2);
+    try testing.expectEqual(KittyFlags.disabled, opts.kitty_flags);
+
+    var buf: [128]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try encode(&writer, .{
+        .key = .key_w,
+        .mods = .{ .ctrl = true },
+        .utf8 = "w",
+    }, opts);
+    try testing.expectEqualStrings("\x17", writer.buffered());
 }
 
 test "legacy: ctrl+char without modify other state 2" {
