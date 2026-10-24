@@ -364,6 +364,12 @@ pub const Action = union(Key) {
     /// split or the window is fullscreen.
     resize_window: ResizeWindow,
 
+    /// The terminal reported a working directory that isn't on this
+    /// machine: an OSC 7 naming another host, or an OSC 9;9 path. The
+    /// value is the report as sent, a URL or a plain path, and is not
+    /// used as the terminal's pwd.
+    remote_pwd: Pwd,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -436,6 +442,7 @@ pub const Action = union(Key) {
         copy_title_to_clipboard,
         move_tab_to_new_window,
         resize_window,
+        remote_pwd,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");

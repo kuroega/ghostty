@@ -1495,7 +1495,9 @@ pub const StreamHandler = struct {
             .mac_address = comptime builtin.os.tag != .macos,
             .raw_path = std.mem.startsWith(u8, url, "kitty-shell-cwd://"),
         }) catch |e| {
+            // OSC 9;9 sends a plain path, e.g. `C:\Users\me` from Windows.
             log.warn("invalid url in OSC 7: {}", .{e});
+            self.reportRemotePwd(url);
             return;
         };
 
@@ -1503,6 +1505,7 @@ pub const StreamHandler = struct {
             !std.mem.eql(u8, "kitty-shell-cwd", uri.scheme))
         {
             log.warn("OSC 7 scheme must be file or kitty-shell-cwd, got: {s}", .{uri.scheme});
+            self.reportRemotePwd(url);
             return;
         }
 
@@ -1510,6 +1513,7 @@ pub const StreamHandler = struct {
         const host = uri.getHost(&host_buffer) catch |err| switch (err) {
             error.UriMissingHost => {
                 log.warn("OSC 7 uri must contain a hostname: {}", .{err});
+                self.reportRemotePwd(url);
                 return;
             },
         };
@@ -1527,6 +1531,7 @@ pub const StreamHandler = struct {
         };
         if (!host_valid) {
             log.warn("OSC 7 host ({s}) must be local", .{host.bytes});
+            self.reportRemotePwd(url);
             return;
         }
 
@@ -1552,6 +1557,16 @@ pub const StreamHandler = struct {
         if (!self.seen_title) {
             try self.windowTitle(path);
             self.seen_title = false;
+        }
+    }
+
+    /// Pass a pwd we won't use as our own, such as one from an SSH
+    /// session, to the apprt so it can still show where the shell is.
+    fn reportRemotePwd(self: *StreamHandler, url: []const u8) void {
+        if (apprt.surface.Message.WriteReq.init(self.alloc, url)) |req| {
+            self.surfaceMessageWriter(.{ .remote_pwd_change = req });
+        } else |err| {
+            log.warn("error notifying surface of remote pwd err={}", .{err});
         }
     }
 
